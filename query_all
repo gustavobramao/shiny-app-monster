@@ -1,0 +1,2752 @@
+library(dplyr)
+library(prophet)
+library(bigrquery)
+library(bigQueryR)
+library(googleAuthR)
+library(gsheet)
+
+options(googleAuthR.scopes.selected = c(
+  "https://www.googleapis.com/auth/bigquery",
+  "https://www.googleapis.com/auth/analytics")
+)
+
+library(RGoogleAnalytics)
+library(knitr)
+library(googleAnalyticsR)
+library(gtrendsR)
+
+source("helpers.R")
+
+gar_auth_service("conn.json")
+knitr::opts_chunk$set(echo = TRUE)
+
+###
+### ----- Filter Date
+###
+start_date <- "2019-01-01"
+end_date <- Sys.Date()
+
+###
+### ----  Query all brands and
+###
+
+# BigQuery Auth
+bq_conn <- get_bq_conn()
+bigrquery::dbListTables(bq_conn)
+
+sql_query <- sprintf("SELECT*
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where date between '%s' and '%s' 
+order by date asc", start_date, end_date)
+
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_all <- bq_table_download(offence_qtr)
+
+df_all$gm_per_cent <- df_all$gross_margin / df_all$gross_revenue
+df_all$total_cost <- df_all$cost + df_all$affiliate_cost
+df_all$CvR <- df_all$orders / df_all$session
+write.csv(df_all, file = "df_all.csv")
+
+###
+### Group data frame by brand to plot clean later-on
+###
+
+macro_brand <- df_all %>% dplyr::select(date, orders, brand, session, gross_revenue, gross_margin, cost, affiliate_cost)
+macro_brand <- macro_brand %>%
+  group_by(date, brand) %>%
+  summarise_all(funs(sum))
+
+### Aggregated sum
+
+macro_brand$gm_per_cent <- macro_brand$gross_margin / macro_brand$gross_revenue
+macro_brand$total_cost <- macro_brand$cost + macro_brand$affiliate_cost
+macro_brand$CvR <- macro_brand$orders / macro_brand$session
+macro_brand$CiR <- macro_brand$total_cost / macro_brand$gross_revenue
+macro_brand[is.na(macro_brand)] <- 0
+
+write.csv(macro_brand, file = "macro_brands.csv")
+
+###
+### Group data frame by brand to plot clean later-on for brands and country ---------
+###
+macro_brand_c <- df_all %>% dplyr::select(date, orders, brand_country, session, gross_revenue, gross_margin, cost, affiliate_cost)
+macro_brand_c <- macro_brand_c %>%
+  group_by(date, brand_country) %>%
+  summarise_all(funs(sum))
+
+
+### Aggregated sum
+
+macro_brand_c$gm_per_cent <- macro_brand_c$gross_margin / macro_brand_c$gross_revenue
+macro_brand_c$total_cost <- macro_brand_c$cost + macro_brand_c$affiliate_cost
+macro_brand_c$CvR <- macro_brand_c$orders / macro_brand_c$session
+macro_brand_c$CiR <- macro_brand_c$total_cost / macro_brand_c$gross_revenue
+macro_brand_c[is.na(macro_brand_c)] <- 0
+
+write.csv(macro_brand_c, file = "~/app/macro_brands_c.csv")
+
+###
+### Query Products -7
+###
+
+start_date_7 <- Sys.Date() - 7
+end_date_7 <- Sys.Date()
+
+bq_conn <- get_bq_conn()
+bigrquery::dbListTables(bq_conn)
+
+sql_query <- sprintf("SELECT
+sku,
+name,
+store_id,
+count(sku) as total,
+sum(base_price) as base_price,
+sum(base_discount_amount) as base_discount,
+sum(base_original_price) as orginal_price,
+sum(qty_ordered) as quantity_ordered
+
+FROM `authentic-codex-225113.magento_bbw.order_items` WHERE created_at between '%s' and '%s'
+
+group by 1,2,3
+
+order by 1 asc, 3 desc", start_date_7, end_date_7)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_bbw_products <- bq_table_download(offence_qtr)
+write.csv(df_bbw_products, file = "df_bbw_products.csv")
+
+
+###
+### Query Products -14
+###
+
+start_date_14 <- Sys.Date() - 14
+end_date_14 <- Sys.Date() - 7
+
+
+bigrquery::dbListTables(bq_conn)
+
+sql_query <- sprintf("SELECT
+sku,
+name,
+store_id,
+count(sku) as total,
+sum(base_price) as base_price,
+sum(base_discount_amount) as base_discount,
+sum(base_original_price) as orginal_price,
+sum(qty_ordered) as quantity_ordered
+
+FROM `authentic-codex-225113.magento_bbw.order_items` WHERE created_at between '%s' and '%s'
+
+group by 1,2,3
+
+order by 1 asc, 3 desc", start_date_14, end_date_14)
+
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_bbw_products_14 <- bq_table_download(offence_qtr)
+write.csv(df_bbw_products_14, file = "df_bbw_products_14.csv")
+
+
+###
+### Last week versus this week GA CvR BBW
+###
+
+
+gar_set_client("secret.json", scopes = "https://www.googleapis.com/auth/analytics")
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176008893"
+CvR_KSA_BBW_last_7 <- google_analytics(ga_id,
+                                       date_range = c(start_date, end_date),
+                                       metrics = c("sessions", "transactions", "transactionsPerSession"),
+                                       dimensions = "dateHour")
+
+
+library(stringr)
+attach(CvR_KSA_BBW_last_7)
+CvR_KSA_BBW_last_7$dateHour <- as.POSIXct(paste(CvR_KSA_BBW_last_7$dateHour, "0000", sep = ""), format = "%Y%m%d%H%M%S")
+CvR_KSA_BBW_last_7$hours <- str_extract(CvR_KSA_BBW_last_7$dateHour, "........$")
+
+
+np1 <- CvR_KSA_BBW_last_7 %>%
+  group_by(hours) %>%
+  summarise(sessions = sum(sessions), transactions = sum(transactions))
+
+
+np1$transactionsPerSession <- np1$transactions / np1$sessions
+
+
+###
+### two week back
+###
+
+
+start_date <- Sys.Date() - 15
+end_date <- Sys.Date() - 8
+
+
+ga_id <- "ga:176008893"
+CvR_KSA_BBW_last_7 <- google_analytics(ga_id,
+                                       date_range = c(start_date, end_date),
+                                       metrics = c("sessions", "transactions", "transactionsPerSession"),
+                                       dimensions = "dateHour")
+
+# 
+# Small transformation prior group by hours
+#
+
+library(stringr)
+attach(CvR_KSA_BBW_last_7)
+CvR_KSA_BBW_last_7$dateHour <- as.POSIXct(paste(CvR_KSA_BBW_last_7$dateHour, "0000", sep = ""), format = "%Y%m%d%H%M%S")
+CvR_KSA_BBW_last_7$hours <- str_extract(CvR_KSA_BBW_last_7$dateHour, "........$")
+
+
+nm1 <- CvR_KSA_BBW_last_7 %>%
+  group_by(hours) %>%
+  summarise(sessions = sum(sessions), transactions = sum(transactions))
+
+
+nm1$transactionsPerSession <- nm1$transactions / np1$sessions
+
+
+##
+## Loop to substract this week versus last week
+##
+
+
+dateHour <- np1$hours
+sessions <- np1$sessions - nm1$sessions
+transactions <- np1$transactions - nm1$transactions
+transactionsPerSession <- np1$transactionsPerSession - nm1$transactionsPerSession
+
+bbw_ksa_7 <- cbind(dateHour, sessions, transactions, transactionsPerSession)
+
+bbw_ksa_7 <- as.data.frame(bbw_ksa_7)
+colnames(bbw_ksa_7) <- c("hour", "sessions", "transactions", "transactionsPerSession")
+
+
+#### export bbw_ksa
+write.csv(bbw_ksa_7, file = "bbw_ksa_cvr.csv")
+
+
+###
+### Last week versus this week GA CvR BBW
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176054247"
+CvR_UAE_BBW_last_7 <- google_analytics(ga_id,
+                                       date_range = c(start_date, end_date),
+                                       metrics = c("sessions", "transactions", "transactionsPerSession"),
+                                       dimensions = "dateHour")
+
+
+library(stringr)
+attach(CvR_UAE_BBW_last_7)
+CvR_UAE_BBW_last_7$dateHour <- as.POSIXct(paste(CvR_UAE_BBW_last_7$dateHour, "0000", sep = ""), format = "%Y%m%d%H%M%S")
+CvR_UAE_BBW_last_7$hours <- str_extract(CvR_UAE_BBW_last_7$dateHour, "........$")
+
+
+np1 <- CvR_UAE_BBW_last_7 %>%
+  group_by(hours) %>%
+  summarise(sessions = sum(sessions), transactions = sum(transactions))
+
+
+np1$transactionsPerSession <- np1$transactions / np1$sessions
+
+
+###
+### two week back
+###
+
+
+start_date <- Sys.Date() - 15
+end_date <- Sys.Date() - 8
+
+
+ga_id <- "ga:176054247"
+CvR_UAE_BBW_last_7 <- google_analytics(ga_id,
+                                       date_range = c(start_date, end_date),
+                                       metrics = c("sessions", "transactions", "transactionsPerSession"),
+                                       dimensions = "dateHour")
+
+# 
+# Small transformation prior group by hours
+#
+
+library(stringr)
+attach(CvR_UAE_BBW_last_7)
+CvR_UAE_BBW_last_7$dateHour <- as.POSIXct(paste(CvR_UAE_BBW_last_7$dateHour, "0000", sep = ""), format = "%Y%m%d%H%M%S")
+CvR_UAE_BBW_last_7$hours <- str_extract(CvR_UAE_BBW_last_7$dateHour, "........$")
+
+
+nm1 <- CvR_UAE_BBW_last_7 %>%
+  group_by(hours) %>%
+  summarise(sessions = sum(sessions), transactions = sum(transactions))
+
+
+nm1$transactionsPerSession <- nm1$transactions / np1$sessions
+
+
+##
+## Loop to substract this week versus last week
+##
+
+
+dateHour <- np1$hours
+sessions <- np1$sessions - nm1$sessions
+transactions <- np1$transactions - nm1$transactions
+transactionsPerSession <- np1$transactionsPerSession - nm1$transactionsPerSession
+
+bbw_uae_7 <- cbind(dateHour, sessions, transactions, transactionsPerSession)
+
+bbw_uae_7 <- as.data.frame(bbw_uae_7)
+colnames(bbw_uae_7) <- c("hour", "sessions", "transactions", "transactionsPerSession")
+
+
+#### export bbw_ksa
+write.csv(bbw_uae_7, file = "bbw_uae_cvr.csv")
+
+
+#####
+#### Hourly forecast_b_uae
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176054247"
+h_bbw_uae <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("sessions", "transactions", "transactionsPerSession"),
+                              dimensions = "dateHour")
+
+
+colnames(h_bbw_uae) <- c("ds", "sessions", "y", "cvr")
+
+
+### Regex transform date
+
+x <- h_bbw_uae$ds
+y <- sub("\\s+$", "", gsub('(.{8})', '\\1 ', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(^.{4})', '\\1-', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(.{7})', '\\1-', x))
+
+y1 <- y
+
+x <- y1
+y <- sub("\\s+$", "", gsub('(.{13})', '\\1:00:00', x))
+
+h_bbw_uae$ds <- y
+
+
+### start modeling
+m <- prophet(h_bbw_uae, growth = "linear", changepoint.range = 0.5,
+             yearly.seasonality = "TRUE", weekly.seasonality = "TRUE",
+             daily.seasonality = "TRUE", holidays = NULL,
+             seasonality.mode = "multiplicative", seasonality.prior.scale = 50,
+             holidays.prior.scale = 10, changepoint.prior.scale = 0.2,
+             mcmc.samples = 0, interval.width = 0.8, uncertainty.samples = 1000,
+             fit = TRUE)
+
+
+future <- make_future_dataframe(m, periods = 30, freq = 60 * 60)
+forecast_bbw_uae <- predict(m, future)
+tail(forecast_bbw_uae[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_bbw_uae[nrow(h_bbw_uae) + 30,] <- NA
+forecast_bbw_uae$r_orders <- h_bbw_uae$y
+forecast_bbw_uae$brand_country <- "bbw_uae"
+
+
+#####
+#### Hourly forecast_b_ksa
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date()
+
+ga_id <- "ga:176008893"
+h_bbw_ksa <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("sessions", "transactions", "transactionsPerSession"),
+                              dimensions = "dateHour")
+
+
+colnames(h_bbw_ksa) <- c("ds", "sessions", "y", "cvr")
+
+
+### Regex transform date
+
+x <- h_bbw_ksa$ds
+y <- sub("\\s+$", "", gsub('(.{8})', '\\1 ', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(^.{4})', '\\1-', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(.{7})', '\\1-', x))
+
+y1 <- y
+
+x <- y1
+y <- sub("\\s+$", "", gsub('(.{13})', '\\1:00:00', x))
+
+h_bbw_ksa$ds <- y
+
+
+### start modeling
+m <- prophet(h_bbw_ksa, growth = "linear", changepoint.range = 0.5,
+             yearly.seasonality = "TRUE", weekly.seasonality = "TRUE",
+             daily.seasonality = "TRUE", holidays = NULL,
+             seasonality.mode = "multiplicative", seasonality.prior.scale = 50,
+             holidays.prior.scale = 10, changepoint.prior.scale = 0.2,
+             mcmc.samples = 0, interval.width = 0.8, uncertainty.samples = 1000,
+             fit = TRUE)
+
+
+future <- make_future_dataframe(m, periods = 30, freq = 60 * 60)
+forecast_bbw_ksa <- predict(m, future)
+tail(forecast_bbw_ksa[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_bbw_ksa[nrow(h_bbw_ksa) + 30,] <- NA
+forecast_bbw_ksa$r_orders <- h_bbw_ksa$y
+forecast_bbw_ksa$brand_country <- "bbw_ksa"
+
+
+#####
+#### Hourly forecast_bbw_uae
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date()
+
+ga_id <- "ga:164862695"
+h_hm_uae <- google_analytics(ga_id,
+                             date_range = c(start_date, end_date),
+                             metrics = c("sessions", "transactions", "transactionsPerSession"),
+                             dimensions = "dateHour")
+
+
+colnames(h_hm_uae) <- c("ds", "sessions", "y", "cvr")
+
+
+### Regex transform date
+
+x <- h_hm_uae$ds
+y <- sub("\\s+$", "", gsub('(.{8})', '\\1 ', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(^.{4})', '\\1-', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(.{7})', '\\1-', x))
+
+y1 <- y
+
+x <- y1
+y <- sub("\\s+$", "", gsub('(.{13})', '\\1:00:00', x))
+
+h_hm_uae$ds <- y
+
+
+### start modeling
+m <- prophet(h_hm_uae, growth = "linear", changepoint.range = 0.5,
+             yearly.seasonality = "TRUE", weekly.seasonality = "TRUE",
+             daily.seasonality = "TRUE", holidays = NULL,
+             seasonality.mode = "multiplicative", seasonality.prior.scale = 50,
+             holidays.prior.scale = 10, changepoint.prior.scale = 0.2,
+             mcmc.samples = 0, interval.width = 0.8, uncertainty.samples = 1000,
+             fit = TRUE)
+
+
+future <- make_future_dataframe(m, periods = 30, freq = 60 * 60)
+forecast_hm_uae <- predict(m, future)
+tail(forecast_hm_uae[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_hm_uae[nrow(h_hm_uae) + 30,] <- NA
+forecast_hm_uae$r_orders <- h_hm_uae$y
+forecast_hm_uae$brand_country <- "hm_uae"
+
+
+#####
+#### Hourly forecast_bbw_uae
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date()
+
+ga_id <- "ga:205050928"
+h_hm_egy <- google_analytics(ga_id,
+                             date_range = c(start_date, end_date),
+                             metrics = c("sessions", "transactions", "transactionsPerSession"),
+                             dimensions = "dateHour")
+
+
+colnames(h_hm_egy) <- c("ds", "sessions", "y", "cvr")
+
+
+### Regex transform date
+
+x <- h_hm_egy$ds
+y <- sub("\\s+$", "", gsub('(.{8})', '\\1 ', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(^.{4})', '\\1-', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(.{7})', '\\1-', x))
+
+y1 <- y
+
+x <- y1
+y <- sub("\\s+$", "", gsub('(.{13})', '\\1:00:00', x))
+
+h_hm_egy$ds <- y
+
+
+### start modeling
+m <- prophet(h_hm_egy, growth = "linear", changepoint.range = 0.5,
+             yearly.seasonality = "TRUE", weekly.seasonality = "TRUE",
+             daily.seasonality = "TRUE", holidays = NULL,
+             seasonality.mode = "multiplicative", seasonality.prior.scale = 50,
+             holidays.prior.scale = 10, changepoint.prior.scale = 0.2,
+             mcmc.samples = 0, interval.width = 0.8, uncertainty.samples = 1000,
+             fit = TRUE)
+
+
+future <- make_future_dataframe(m, periods = 30, freq = 60 * 60)
+forecast_hm_egy <- predict(m, future)
+tail(forecast_hm_egy[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_hm_egy[nrow(h_hm_egy) + 30,] <- NA
+forecast_hm_egy$r_orders <- h_hm_egy$y
+forecast_hm_egy$brand_country <- "hm_egy"
+
+
+#####
+#### Hourly forecast_hm_ksa
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date()
+
+ga_id <- "ga:164870155"
+h_hm_ksa <- google_analytics(ga_id,
+                             date_range = c(start_date, end_date),
+                             metrics = c("sessions", "transactions", "transactionsPerSession"),
+                             dimensions = "dateHour")
+
+
+colnames(h_hm_ksa) <- c("ds", "sessions", "y", "cvr")
+
+
+### Regex transform date
+
+x <- h_hm_ksa$ds
+y <- sub("\\s+$", "", gsub('(.{8})', '\\1 ', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(^.{4})', '\\1-', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(.{7})', '\\1-', x))
+
+y1 <- y
+
+x <- y1
+y <- sub("\\s+$", "", gsub('(.{13})', '\\1:00:00', x))
+
+h_hm_ksa$ds <- y
+
+
+### start modeling
+m <- prophet(h_hm_ksa, growth = "linear", changepoint.range = 0.5,
+             yearly.seasonality = "TRUE", weekly.seasonality = "TRUE",
+             daily.seasonality = "TRUE", holidays = NULL,
+             seasonality.mode = "multiplicative", seasonality.prior.scale = 50,
+             holidays.prior.scale = 10, changepoint.prior.scale = 0.2,
+             mcmc.samples = 0, interval.width = 0.8, uncertainty.samples = 1000,
+             fit = TRUE)
+
+
+future <- make_future_dataframe(m, periods = 30, freq = 60 * 60)
+forecast_hm_ksa <- predict(m, future)
+tail(forecast_hm_ksa[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_hm_ksa[nrow(h_hm_ksa) + 30,] <- NA
+forecast_hm_ksa$r_orders <- h_hm_ksa$y
+forecast_hm_ksa$brand_country <- "hm_ksa"
+
+
+#####
+#### Hourly forecast_mc_uae
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date()
+
+ga_id <- "ga:114955062"
+h_mc_uae <- google_analytics(ga_id,
+                             date_range = c(start_date, end_date),
+                             metrics = c("sessions", "transactions", "transactionsPerSession"),
+                             dimensions = "dateHour")
+
+
+colnames(h_mc_uae) <- c("ds", "sessions", "y", "cvr")
+
+
+### Regex transform date
+
+x <- h_mc_uae$ds
+y <- sub("\\s+$", "", gsub('(.{8})', '\\1 ', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(^.{4})', '\\1-', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(.{7})', '\\1-', x))
+
+y1 <- y
+
+x <- y1
+y <- sub("\\s+$", "", gsub('(.{13})', '\\1:00:00', x))
+
+h_mc_uae$ds <- y
+
+
+### start modeling
+m <- prophet(h_mc_uae, growth = "linear", changepoint.range = 0.5,
+             yearly.seasonality = "TRUE", weekly.seasonality = "TRUE",
+             daily.seasonality = "TRUE", holidays = NULL,
+             seasonality.mode = "multiplicative", seasonality.prior.scale = 50,
+             holidays.prior.scale = 10, changepoint.prior.scale = 0.2,
+             mcmc.samples = 0, interval.width = 0.8, uncertainty.samples = 1000,
+             fit = TRUE)
+
+
+future <- make_future_dataframe(m, periods = 30, freq = 60 * 60)
+forecast_mc_uae <- predict(m, future)
+tail(forecast_mc_uae[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_mc_uae[nrow(h_mc_uae) + 30,] <- NA
+forecast_mc_uae$r_orders <- h_mc_uae$y
+forecast_mc_uae$brand_country <- "mc_uae"
+
+
+#####
+#### Hourly forecast_mc_ksa
+###
+
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date()
+
+ga_id <- "ga:114976409"
+h_mc_ksa <- google_analytics(ga_id,
+                             date_range = c(start_date, end_date),
+                             metrics = c("sessions", "transactions", "transactionsPerSession"),
+                             dimensions = "dateHour")
+
+
+colnames(h_mc_ksa) <- c("ds", "sessions", "y", "cvr")
+
+
+### Regex transform date
+
+x <- h_mc_ksa$ds
+y <- sub("\\s+$", "", gsub('(.{8})', '\\1 ', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(^.{4})', '\\1-', x))
+
+y
+
+x <- y
+y <- sub("\\s+$", "", gsub('(.{7})', '\\1-', x))
+
+y1 <- y
+
+x <- y1
+y <- sub("\\s+$", "", gsub('(.{13})', '\\1:00:00', x))
+
+h_mc_ksa$ds <- y
+
+
+### start modeling
+m <- prophet(h_mc_ksa, growth = "linear", changepoint.range = 0.5,
+             yearly.seasonality = "TRUE", weekly.seasonality = "TRUE",
+             daily.seasonality = "TRUE", holidays = NULL,
+             seasonality.mode = "multiplicative", seasonality.prior.scale = 50,
+             holidays.prior.scale = 10, changepoint.prior.scale = 0.2,
+             mcmc.samples = 0, interval.width = 0.8, uncertainty.samples = 1000,
+             fit = TRUE)
+
+
+future <- make_future_dataframe(m, periods = 30, freq = 60 * 60)
+forecast_mc_ksa <- predict(m, future)
+tail(forecast_mc_ksa[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_mc_ksa[nrow(h_mc_ksa) + 30,] <- NA
+forecast_mc_ksa$r_orders <- h_mc_ksa$y
+forecast_mc_ksa$brand_country <- "mc_ksa"
+
+
+###Join both tables
+inner <- rbind(forecast_bbw_ksa, forecast_bbw_uae, forecast_hm_uae, forecast_hm_egy, forecast_hm_ksa, forecast_mc_uae, forecast_mc_ksa)
+write.csv(inner, file = "f_bbw.csv")
+
+
+#####
+##### GA Sessions------- Transactions ---- --------  -------------  --------------- -----------
+#####
+
+
+#### HM KSA
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:164870155"
+hm_ksa <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+
+hm_ksa$brand_country <- "hm_ksa"
+
+
+### HM UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:164862695"
+hm_uae <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+
+hm_uae$brand_country <- "hm_uae"
+
+
+### HM EGY
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:205050928"
+hm_egy <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+
+hm_egy$brand_country <- "hm_egy"
+
+
+### MC UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:114955062"
+mc_uae <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+
+mc_uae$brand_country <- "mc_uae"
+
+
+### MC KSA
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:114976409"
+mc_ksa <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+
+mc_ksa$brand_country <- "mc_ksa"
+
+
+### BBW UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176054247"
+bbw_uae <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+
+bbw_uae$brand_country <- "bbw_uae"
+
+
+### BBW KSA
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176008893"
+bbw_ksa <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+
+bbw_ksa$brand_country <- "bbw_ksa"
+
+
+### VS UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176079653"
+vs_uae <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+
+vs_uae$brand_country <- "vs_uae"
+
+
+### VS KSA
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176080378"
+vs_ksa <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+vs_ksa$brand_country <- "vs_ksa"
+
+
+### WES UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:203456336"
+wes_uae <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+wes_uae$brand_country <- "wes_uae"
+
+
+### WES KSA
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:203501911"
+wes_ksa <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+wes_uae$brand_country <- "wes_ksa"
+
+
+### PB UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:188370045"
+pb_uae <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+pb_uae$brand_country <- "pb_uae"
+
+
+### PB KSA
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:197344933"
+pb_ksa <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+pb_ksa$brand_country <- "pb_ksa"
+
+
+### AEO UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:214221282"
+aeo_uae <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+aeo_uae$brand_country <- "aeo_uae"
+
+
+### AEO KSA
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:214218311"
+aeo_ksa <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+aeo_ksa$brand_country <- "aeo_ksa"
+
+
+### BBW UAE
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176054247"
+bbw_uae <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+bbw_uae$brand_country <- "bbw_uae"
+
+
+### BBW KSA
+
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176008893"
+bbw_ksa <- google_analytics(ga_id,
+                            date_range = c(start_date, end_date),
+                            metrics = c("sessions", "transactions"),
+                            dimensions = "date")
+
+bbw_ksa$brand_country <- "bbw_ksa"
+
+
+### MC KWT
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:114973213"
+mc_kwt <- google_analytics(ga_id,
+                           date_range = c(start_date, end_date),
+                           metrics = c("sessions", "transactions"),
+                           dimensions = "date")
+
+mc_kwt$brand_country <- "mc_kwt"
+
+### merge all DFs.
+
+inner_ga <- rbind(hm_ksa, hm_uae, hm_egy, mc_ksa, mc_uae, mc_kwt, pb_uae, pb_ksa, bbw_uae, bbw_ksa)
+
+
+write.csv(inner_ga, file = "iga.csv")
+
+
+####
+###  Daily forecast ----- ---- ---- 
+###
+
+####
+#### MC_uae
+###
+
+start_date <- Sys.Date() - 300
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:114955062"
+h_mc_uae1 <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("sessions", "transactions", "transactionsPerSession"),
+                              dimensions = "date")
+
+
+#rename col
+colnames(h_mc_uae1) <- c("ds", "sessions", "y", "cvr")
+
+
+### transform date
+h_mc_uae1$ds <- as.Date(h_mc_uae1$ds)
+
+#import promo calendar.
+promo_mc_uae <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1id5B62SMR-kieCRdoa20p7na9stBdldf7AB8yNGxE-Q/edit?usp=sharing')
+
+
+### start modeling
+m <- prophet(h_mc_uae1, growth = "linear", changepoint.range = 0.9, daily.seasonality = TRUE, weekly.seasonality = TRUE,
+             holidays = promo_mc_uae, seasonality.mode = "multiplicative",
+             changepoint.prior.scale = 0.2)
+future <- make_future_dataframe(m, periods = 30)
+forecast_mc_uae1 <- predict(m, future)
+tail(forecast_mc_uae1[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_mc_uae1[nrow(h_mc_uae1) + 30,] <- NA
+forecast_mc_uae1$r_orders <- h_mc_uae1$y
+forecast_mc_uae1$brand_country <- "mc_uae"
+
+
+####
+#### MC_KSA
+###
+
+start_date <- Sys.Date() - 300
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:114976409"
+h_mc_ksa1 <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("sessions", "transactions", "transactionsPerSession"),
+                              dimensions = "date")
+
+
+#rename col
+colnames(h_mc_ksa1) <- c("ds", "sessions", "y", "cvr")
+
+
+### transform date
+h_mc_ksa1$ds <- as.Date(h_mc_ksa1$ds)
+
+#import promo calendar.
+promo_mc_ksa <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1NylNgZgIuXoliFh5Pg3Q4PO_fp8xZ8HZbKL3NhcnSP8/edit?usp=sharing')
+
+
+### start modeling
+m <- prophet(h_mc_ksa1, growth = "linear", changepoint.range = 0.9, daily.seasonality = TRUE, weekly.seasonality = TRUE,
+             holidays = promo_mc_ksa, seasonality.mode = "multiplicative",
+             changepoint.prior.scale = 0.2)
+future <- make_future_dataframe(m, periods = 30)
+forecast_mc_ksa1 <- predict(m, future)
+tail(forecast_mc_ksa1[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_mc_ksa1[nrow(h_mc_ksa1) + 30,] <- NA
+forecast_mc_ksa1$r_orders <- h_mc_ksa1$y
+forecast_mc_ksa1$brand_country <- "mc_ksa"
+
+
+####
+#### bbw_uae
+###
+
+start_date <- Sys.Date() - 300
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176054247"
+h_bbw_uae1 <- google_analytics(ga_id,
+                               date_range = c(start_date, end_date),
+                               metrics = c("sessions", "transactions", "transactionsPerSession"),
+                               dimensions = "date")
+
+
+#rename col
+colnames(h_bbw_uae1) <- c("ds", "sessions", "y", "cvr")
+
+
+### transform date
+h_bbw_uae1$ds <- as.Date(h_bbw_uae1$ds)
+
+#import promo calendar.
+promo_bbw_uae <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1JFEodosUuVoKAtv596Gb2qrkUXst_VF8in9aek41fA8/edit?usp=sharing')
+
+
+### start modeling
+m <- prophet(h_bbw_uae1, growth = "linear", changepoint.range = 0.9, daily.seasonality = TRUE, weekly.seasonality = TRUE,
+             holidays = promo_bbw_uae, seasonality.mode = "multiplicative",
+             changepoint.prior.scale = 0.7)
+future <- make_future_dataframe(m, periods = 30)
+forecast_bbw_uae1 <- predict(m, future)
+tail(forecast_bbw_uae1[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_bbw_uae1[nrow(h_bbw_uae1) + 30,] <- NA
+forecast_bbw_uae1$r_orders <- h_bbw_uae1$y
+forecast_bbw_uae1$brand_country <- "bbw_uae"
+
+
+####
+#### bbw_ksa
+###
+
+start_date <- Sys.Date() - 300
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:176008893"
+h_bbw_ksa1 <- google_analytics(ga_id,
+                               date_range = c(start_date, end_date),
+                               metrics = c("sessions", "transactions", "transactionsPerSession"),
+                               dimensions = "date")
+
+
+#rename col
+colnames(h_bbw_ksa1) <- c("ds", "sessions", "y", "cvr")
+
+
+### transform date
+h_bbw_ksa1$ds <- as.Date(h_bbw_ksa1$ds)
+
+#import promo calendar.
+promo_bbw_ksa <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1Ly1i-L0Jkgv78vdgLFxJiExiqqlkkUxzvejvM57PlAU/edit?usp=sharing')
+
+
+### start modeling
+m <- prophet(h_bbw_ksa1, growth = "linear", changepoint.range = 0.7, daily.seasonality = TRUE, weekly.seasonality = TRUE,
+             holidays = promo_bbw_uae, seasonality.mode = "multiplicative",
+             changepoint.prior.scale = 0.7)
+future <- make_future_dataframe(m, periods = 30)
+forecast_bbw_ksa1 <- predict(m, future)
+tail(forecast_bbw_ksa1[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_bbw_ksa1[nrow(h_bbw_ksa1) + 30,] <- NA
+forecast_bbw_ksa1$r_orders <- h_bbw_ksa1$y
+forecast_bbw_ksa1$brand_country <- "bbw_ksa"
+
+
+####
+#### hm_ksa
+###
+
+start_date <- Sys.Date() - 300
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:164870155"
+h_hm_ksa1 <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("sessions", "transactions", "transactionsPerSession"),
+                              dimensions = "date")
+
+
+#rename col
+colnames(h_hm_ksa1) <- c("ds", "sessions", "y", "cvr")
+
+
+### transform date
+h_hm_ksa1$ds <- as.Date(h_hm_ksa1$ds)
+
+#import promo calendar.
+promo_hm_ksa <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1T1CRulFxrPoEsvC3ykpbCGQEfnnlwwn5wu-5eNyHowc/edit?usp=sharing')
+
+
+### start modeling
+m <- prophet(h_hm_ksa1, growth = "linear", changepoint.range = 0.7, daily.seasonality = TRUE, weekly.seasonality = TRUE,
+             holidays = promo_hm_ksa, seasonality.mode = "multiplicative",
+             changepoint.prior.scale = 0.7)
+future <- make_future_dataframe(m, periods = 30)
+forecast_hm_ksa1 <- predict(m, future)
+tail(forecast_hm_ksa1[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_hm_ksa1[nrow(h_hm_ksa1) + 30,] <- NA
+forecast_hm_ksa1$r_orders <- h_hm_ksa1$y
+forecast_hm_ksa1$brand_country <- "hm_ksa"
+
+
+####
+#### hm_uae
+###
+
+start_date <- Sys.Date() - 300
+end_date <- Sys.Date() - 1
+
+ga_id <- "ga:164862695"
+h_hm_uae1 <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("sessions", "transactions", "transactionsPerSession"),
+                              dimensions = "date")
+
+
+#rename col
+colnames(h_hm_uae1) <- c("ds", "sessions", "y", "cvr")
+
+
+### transform date
+h_hm_uae1$ds <- as.Date(h_hm_uae1$ds)
+
+#import promo calendar.
+promo_hm_uae <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1T1CRulFxrPoEsvC3ykpbCGQEfnnlwwn5wu-5eNyHowc/edit?usp=sharing')
+
+
+### start modeling
+m <- prophet(h_hm_uae1, growth = "linear", changepoint.range = 0.7, daily.seasonality = TRUE, weekly.seasonality = TRUE,
+             holidays = promo_hm_uae, seasonality.mode = "multiplicative",
+             changepoint.prior.scale = 0.7)
+future <- make_future_dataframe(m, periods = 30)
+forecast_hm_uae1 <- predict(m, future)
+tail(forecast_hm_uae1[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+h_hm_uae1[nrow(h_hm_uae1) + 30,] <- NA
+forecast_hm_uae1$r_orders <- h_hm_uae1$y
+forecast_hm_uae1$brand_country <- "hm_uae"
+
+
+###
+#### Merge All Data Frames.
+####
+
+inner_forecast <- rbind(forecast_mc_uae1, forecast_mc_ksa1, forecast_bbw_uae1, forecast_bbw_ksa1,
+                        forecast_hm_ksa1, forecast_hm_uae1)
+
+write.csv(inner_forecast, file = "inner_forecast.csv")
+
+
+#####
+#### Simulator Monster Machine
+####
+
+df1 <- df_all %>% select(month_id, total_cost, session, brand, year_id)
+write.csv(df1, file = "df1.csv")
+
+
+###
+### -------------------- User Funnel Data.
+###
+
+#### BBW KSA Historical
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date()
+
+ga_id <- "ga:176008893"
+f_bbw_ksa <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("users"),
+                              dimensions = "shoppingStage")
+
+f_bbw_ksa <- f_bbw_ksa %>% filter(shoppingStage == "ALL_VISITS" |
+                                    shoppingStage == "PRODUCT_VIEW"
+                                  |
+                                    shoppingStage == "CHECKOUT_1" |
+                                    shoppingStage == "CHECKOUT_2" |
+                                    shoppingStage == "CHECKOUT_3" |
+                                    shoppingStage == "TRANSACTION")
+
+f_bbw_ksa$brand_country <- "bbw_ksa"
+f_bbw_ksa <- f_bbw_ksa %>% arrange(desc(f_bbw_ksa$users))
+
+
+#### BBW KSA 7 days
+
+start_date <- Sys.Date() - 7
+end_date <- Sys.Date()
+
+ga_id <- "ga:176008893"
+f_bbw_ksa7 <- google_analytics(ga_id,
+                               date_range = c(start_date, end_date),
+                               metrics = c("users"),
+                               dimensions = "shoppingStage")
+
+f_bbw_ksa7 <- f_bbw_ksa7 %>% filter(shoppingStage == "ALL_VISITS" |
+                                      shoppingStage == "PRODUCT_VIEW"
+                                    |
+                                      shoppingStage == "CHECKOUT_1" |
+                                      shoppingStage == "CHECKOUT_2" |
+                                      shoppingStage == "CHECKOUT_3" |
+                                      shoppingStage == "TRANSACTION")
+f_bbw_ksa7$brand_country <- "bbw_ksa"
+f_bbw_ksa7 <- f_bbw_ksa7 %>% arrange(desc(f_bbw_ksa7$users))
+
+
+#### BBW KSA Today
+
+start_date <- Sys.Date() - 1
+end_date <- Sys.Date()
+
+ga_id <- "ga:176008893"
+f_bbw_ksat <- google_analytics(ga_id,
+                               date_range = c(start_date, end_date),
+                               metrics = c("users"),
+                               dimensions = "shoppingStage")
+
+f_bbw_ksat <- f_bbw_ksat %>% filter(shoppingStage == "ALL_VISITS" |
+                                      shoppingStage == "PRODUCT_VIEW"
+                                    |
+                                      shoppingStage == "CHECKOUT_1" |
+                                      shoppingStage == "CHECKOUT_2" |
+                                      shoppingStage == "CHECKOUT_3" |
+                                      shoppingStage == "TRANSACTION")
+f_bbw_ksat$brand_country <- "bbw_ksa"
+f_bbw_ksat <- f_bbw_ksat %>% arrange(desc(f_bbw_ksat$users))
+
+
+#### bbw_uae Historical
+
+start_date <- Sys.Date() - 100
+end_date <- Sys.Date()
+
+ga_id <- "ga:176054247"
+f_bbw_uae <- google_analytics(ga_id,
+                              date_range = c(start_date, end_date),
+                              metrics = c("users"),
+                              dimensions = "shoppingStage")
+
+f_bbw_uae <- f_bbw_uae %>% filter(shoppingStage == "ALL_VISITS" |
+                                    shoppingStage == "PRODUCT_VIEW"
+                                  |
+                                    shoppingStage == "CHECKOUT_1" |
+                                    shoppingStage == "CHECKOUT_2" |
+                                    shoppingStage == "CHECKOUT_3" |
+                                    shoppingStage == "TRANSACTION")
+
+f_bbw_uae$brand_country <- "bbw_uae"
+f_bbw_uae <- f_bbw_uae %>% arrange(desc(f_bbw_uae$users))
+
+
+#### bbw_uae 7 days
+
+start_date <- Sys.Date() - 7
+end_date <- Sys.Date()
+
+ga_id <- "ga:176054247"
+f_bbw_uae7 <- google_analytics(ga_id,
+                               date_range = c(start_date, end_date),
+                               metrics = c("users"),
+                               dimensions = "shoppingStage")
+
+f_bbw_uae7 <- f_bbw_uae7 %>% filter(shoppingStage == "ALL_VISITS" |
+                                      shoppingStage == "PRODUCT_VIEW"
+                                    |
+                                      shoppingStage == "CHECKOUT_1" |
+                                      shoppingStage == "CHECKOUT_2" |
+                                      shoppingStage == "CHECKOUT_3" |
+                                      shoppingStage == "TRANSACTION")
+
+f_bbw_uae7$brand_country <- "bbw_uae"
+f_bbw_uae7 <- f_bbw_uae7 %>% arrange(desc(f_bbw_uae7$users))
+
+
+#### bbw_uae Today
+
+start_date <- Sys.Date() - 1
+end_date <- Sys.Date()
+
+ga_id <- "ga:176054247"
+f_bbw_uaet <- google_analytics(ga_id,
+                               date_range = c(start_date, end_date),
+                               metrics = c("users"),
+                               dimensions = "shoppingStage")
+
+f_bbw_uaet <- f_bbw_uaet %>% filter(shoppingStage == "ALL_VISITS" |
+                                      shoppingStage == "PRODUCT_VIEW"
+                                    |
+                                      shoppingStage == "CHECKOUT_1" |
+                                      shoppingStage == "CHECKOUT_2" |
+                                      shoppingStage == "CHECKOUT_3" |
+                                      shoppingStage == "TRANSACTION")
+
+f_bbw_uaet$brand_country <- "bbw_uae"
+f_bbw_uaet <- f_bbw_uaet %>% arrange(desc(f_bbw_uaet$users))
+
+
+#### merge
+funnel_historical <- rbind(f_bbw_uae, f_bbw_ksa)
+write.csv(funnel_historical, file = "funnel_historical.csv")
+
+
+#### merge
+funnel7 <- rbind(f_bbw_uae7, f_bbw_ksa7)
+write.csv(funnel7, file = "funnel7.csv")
+
+
+#### merge
+funnelt <- rbind(f_bbw_uaet, f_bbw_ksat)
+write.csv(funnelt, file = "funnelt.csv")
+
+
+###
+### ---------------------- Product Performance
+###
+
+####
+#### BBW KSA
+###
+
+start_date <- Sys.Date() - 7
+end_date <- Sys.Date()
+
+ga_id <- "ga:176008893"
+bbw_ksa_product_after_SAS <- google_analytics(ga_id,
+                                              date_range = c(start_date, end_date),
+                                              metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                              dimensions = c("productSku", "productName"),
+                                              anti_sample = TRUE)
+
+bbw_ksa_product_after_SAS$brand_country <- "bbw_ksa"
+
+
+bbw_ksa_product_after_SAS <- bbw_ksa_product_after_SAS %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### BBW KSA
+###
+
+start_date <- Sys.Date() - 40
+end_date <- Sys.Date() - 10
+
+ga_id <- "ga:176008893"
+bbw_ksa_product <- google_analytics(ga_id,
+                                    date_range = c(start_date, end_date),
+                                    metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                    dimensions = c("productSku", "productName"),
+                                    anti_sample = TRUE)
+
+
+bbw_ksa_product$brand_country <- "bbw_ksa"
+
+bbw_ksa_product <- bbw_ksa_product %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### FL UAE ----- --
+###
+
+start_date <- Sys.Date() - 7
+end_date <- Sys.Date()
+
+ga_id <- "ga:197083733"
+fl_uae_product_after_SAS <- google_analytics(ga_id,
+                                             date_range = c(start_date, end_date),
+                                             metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                             dimensions = c("productSku", "productName"),
+                                             anti_sample = TRUE)
+
+
+fl_uae_product_after_SAS$brand_country <- "fl_uae"
+fl_uae_product_after_SAS <- fl_uae_product_after_SAS %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### FL UAE --- ----- 
+###
+
+start_date <- Sys.Date() - 40
+end_date <- Sys.Date() - 10
+
+ga_id <- "ga:197083733"
+fl_uae_product <- google_analytics(ga_id,
+                                   date_range = c(start_date, end_date),
+                                   metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                   dimensions = c("productSku", "productName"),
+                                   anti_sample = TRUE)
+
+
+fl_uae_product$brand_country <- "fl_uae"
+fl_uae_product <- fl_uae_product %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### VS UAE -------
+###
+
+start_date <- Sys.Date() - 7
+end_date <- Sys.Date()
+
+ga_id <- "ga:176079653"
+vs_uae_product_after_SAS <- google_analytics(ga_id,
+                                             date_range = c(start_date, end_date),
+                                             metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                             dimensions = c("productSku", "productName"),
+                                             anti_sample = TRUE)
+
+
+vs_uae_product_after_SAS$brand_country <- "vs_uae"
+vs_uae_product_after_SAS <- vs_uae_product_after_SAS %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### VS UAE --- ----- 
+###
+
+start_date <- Sys.Date() - 40
+end_date <- Sys.Date() - 10
+
+ga_id <- "ga:176079653"
+vs_uae_product <- google_analytics(ga_id,
+                                   date_range = c(start_date, end_date),
+                                   metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                   dimensions = c("productSku", "productName"),
+                                   anti_sample = TRUE)
+
+
+vs_uae_product$brand_country <- "vs_uae"
+vs_uae_product <- vs_uae_product %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### HM UAE -------
+###
+
+start_date <- Sys.Date() - 7
+end_date <- Sys.Date()
+
+ga_id <- "ga:164862695"
+hm_uae_product_after_SAS <- google_analytics(ga_id,
+                                             date_range = c(start_date, end_date),
+                                             metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                             dimensions = c("productSku", "productName"),
+                                             anti_sample = TRUE)
+
+
+hm_uae_product_after_SAS$brand_country <- "hm_uae"
+hm_uae_product_after_SAS <- hm_uae_product_after_SAS %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+start_date <- Sys.Date() - 40
+end_date <- Sys.Date() - 10
+
+ga_id <- "ga:164862695"
+hm_uae_product <- google_analytics(ga_id,
+                                   date_range = c(start_date, end_date),
+                                   metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                   dimensions = c("productSku", "productName"),
+                                   anti_sample = TRUE)
+
+
+hm_uae_product$brand_country <- "hm_uae"
+hm_uae_product <- hm_uae_product %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### MC KSA
+###
+
+start_date <- Sys.Date() - 7
+end_date <- Sys.Date()
+
+ga_id <- "ga:114976409"
+mc_ksa_product_after_SAS <- google_analytics(ga_id,
+                                             date_range = c(start_date, end_date),
+                                             metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                             dimensions = c("productSku", "productName"),
+                                             anti_sample = TRUE)
+
+mc_ksa_product_after_SAS$brand_country <- "mc_ksa"
+
+
+mc_ksa_product_after_SAS <- mc_ksa_product_after_SAS %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+####
+#### MC KSA
+###
+
+start_date <- Sys.Date() - 40
+end_date <- Sys.Date() - 10
+
+ga_id <- "ga:114976409"
+mc_ksa_product <- google_analytics(ga_id,
+                                   date_range = c(start_date, end_date),
+                                   metrics = c("itemRevenue", "productListCTR", "productListClicks", "buyToDetailRate"),
+                                   dimensions = c("productSku", "productName"),
+                                   anti_sample = TRUE)
+
+
+mc_ksa_product$brand_country <- "mc_ksa"
+
+mc_ksa_product <- mc_ksa_product %>%
+  filter(rank(desc(itemRevenue)) <= 50)
+
+
+### merge all DFs.
+
+products_after_SAS <- rbind(fl_uae_product_after_SAS, bbw_ksa_product_after_SAS, vs_uae_product_after_SAS,
+                            hm_uae_product_after_SAS, mc_ksa_product_after_SAS)
+
+write.csv(products_after_SAS, file = "bb2.csv")
+
+product <- rbind(fl_uae_product, bbw_ksa_product, vs_uae_product, hm_uae_product, mc_ksa_product)
+write.csv(product, file = "pr2.csv")
+
+
+###
+### ---------------------- Outlier CiR table.
+###
+
+start_date <- Sys.Date() - 8
+end_date <- Sys.Date() - 2
+
+
+# BigQuery Auth
+bq_conn <- get_bq_conn()
+bigrquery::dbListTables(bq_conn)
+
+#### last week.
+
+sql_query <- sprintf("SELECT
+brand,
+SUM(orders) as orders,
+SUM(gross_revenue) as gross_revenue,
+SAFE_DIVIDE(sum(new_customers),sum(orders)) as new_customers,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(sum(gross_revenue), SUM(orders)) AS AOV,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SAFE_DIVIDE(SUM(orders), SUM(session)) as CvR
+ 
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where date between '%s' and '%s'
+ 
+group by
+1
+
+                    
+order by 1 asc", start_date, end_date)
+
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_cpo <- bq_table_download(offence_qtr)
+
+
+start_date <- Sys.Date() - 1
+end_date <- Sys.Date() - 1
+
+#### Yesterday
+
+sql_query <- sprintf("SELECT
+brand,
+SUM(orders) as orders,
+SUM(gross_revenue) as gross_revenue,
+SAFE_DIVIDE(sum(new_customers),sum(orders)) as new_customers,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(sum(gross_revenue), SUM(orders)) AS AOV,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SAFE_DIVIDE(SUM(orders), SUM(session)) as CvR
+ 
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where date between '%s' and '%s'
+ 
+group by
+1
+
+
+order by 1 asc", start_date, end_date)
+
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_cpo_yesterday <- bq_table_download(offence_qtr)
+
+
+#import promo calendar.
+cir_target <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1Y4JPX09kCdbt6PXxmlyvC1h55TYdc_3ztxopkN0P4pM/edit?usp=sharing')
+
+df_cpo$target_cir <- 0
+
+df_cpo$target_cir[1:1] <- 0.15
+df_cpo$target_cir[2:2] <- 0.13
+df_cpo$target_cir[3:3] <- 0.05
+df_cpo$target_cir[4:4] <- 0.16
+df_cpo$target_cir[5:5] <- 0.10
+df_cpo$target_cir[6:6] <- 0.14
+df_cpo$target_cir[7:7] <- 0.10
+df_cpo$target_cir[8:8] <- 0.14
+
+write.csv(df_cpo, file = "df_cpo.csv")
+
+
+df_cpo_yesterday$target_cir <- 0
+
+df_cpo_yesterday$target_cir[1:1] <- 0.15
+df_cpo_yesterday$target_cir[2:2] <- 0.13
+df_cpo_yesterday$target_cir[3:3] <- 0.05
+df_cpo_yesterday$target_cir[4:4] <- 0.16
+df_cpo_yesterday$target_cir[5:5] <- 0.10
+df_cpo_yesterday$target_cir[6:6] <- 0.14
+df_cpo_yesterday$target_cir[7:7] <- 0.10
+df_cpo_yesterday$target_cir[8:8] <- 0.14
+
+
+write.csv(df_cpo_yesterday, file = "df_cpo_yesterday.csv")
+write.csv(cir_target, file = "cir_target.csv")
+
+
+####
+#### Top CIR ----- 
+####
+
+end_date <- Sys.Date() - 1
+
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SUM(gross_revenue)/SUM(orders) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.33)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+(SUM(affiliate_cost) + SUM(cost)) / sum(orders) as CPO,
+(SUM(affiliate_cost) + SUM(cost)) / sum(new_customers) as CPA,
+(SUM(affiliate_cost) + SUM(cost)) / sum(gross_revenue) as CIR,
+(SUM(affiliate_cost) + SUM(cost)) / SUM(session) as CPV,
+SUM(orders)/SUM(session) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'HM_EGY' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_hm_egy_p <- bq_table_download(offence_qtr)
+
+df_hm_egy_p <- df_hm_egy_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### HM UAE
+
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SUM(gross_revenue)/SUM(orders) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.33)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+(SUM(affiliate_cost) + SUM(cost)) / sum(orders) as CPO,
+(SUM(affiliate_cost) + SUM(cost)) / sum(new_customers) as CPA,
+(SUM(affiliate_cost) + SUM(cost)) / sum(gross_revenue) as CIR,
+(SUM(affiliate_cost) + SUM(cost)) / SUM(session) as CPV,
+SUM(orders)/SUM(session) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'HM_UAE' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_hm_uae_p <- bq_table_download(offence_qtr)
+
+df_hm_uae_p <- df_hm_uae_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### HM KSA
+
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SUM(gross_revenue)/SUM(orders) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.33)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+(SUM(affiliate_cost) + SUM(cost)) / sum(orders) as CPO,
+(SUM(affiliate_cost) + SUM(cost)) / sum(new_customers) as CPA,
+(SUM(affiliate_cost) + SUM(cost)) / sum(gross_revenue) as CIR,
+(SUM(affiliate_cost) + SUM(cost)) / SUM(session) as CPV,
+SUM(orders)/SUM(session) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'HM_KSA' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_hm_ksa_p <- bq_table_download(offence_qtr)
+
+df_hm_ksa_p <- df_hm_ksa_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### BBW UAE
+
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SUM(gross_revenue)/SUM(orders) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+(SUM(affiliate_cost) + SUM(cost)) / sum(orders) as CPO,
+(SUM(affiliate_cost) + SUM(cost)) / sum(new_customers) as CPA,
+(SUM(affiliate_cost) + SUM(cost)) / sum(gross_revenue) as CIR,
+(SUM(affiliate_cost) + SUM(cost)) / SUM(session) as CPV,
+SUM(orders)/SUM(session) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'BB_UAE' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_bbw_uae_p <- bq_table_download(offence_qtr)
+
+df_bbw_uae_p <- df_bbw_uae_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### BBW UAE
+
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SUM(gross_revenue)/SUM(orders) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+(SUM(affiliate_cost) + SUM(cost)) / sum(orders) as CPO,
+(SUM(affiliate_cost) + SUM(cost)) / sum(new_customers) as CPA,
+(SUM(affiliate_cost) + SUM(cost)) / sum(gross_revenue) as CIR,
+(SUM(affiliate_cost) + SUM(cost)) / SUM(session) as CPV,
+SUM(orders)/SUM(session) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'BB_UAE' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_bbw_ksa_p <- bq_table_download(offence_qtr)
+
+
+df_bbw_ksa_p <- df_bbw_ksa_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### MC KSA
+
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(SUM(gross_revenue), SUM(orders)) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SAFE_DIVIDE(SUM(orders), SUM(session)) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'MC_KSA' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_mc_ksa_p <- bq_table_download(offence_qtr)
+
+
+df_mc_ksa_p <- df_mc_ksa_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### bbw_ksa
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(SUM(gross_revenue), SUM(orders)) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SAFE_DIVIDE(SUM(orders), SUM(session)) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'BB_KSA' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_bbw_ksa_p <- bq_table_download(offence_qtr)
+
+df_bbw_ksa_p <- df_bbw_ksa_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### vs_ksa
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(SUM(gross_revenue), SUM(orders)) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SUM(orders)/SUM(session) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'VS_KSA' and date between '2020-06-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_vs_ksa_p <- bq_table_download(offence_qtr)
+
+df_vs_ksa_p <- df_vs_ksa_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### vs_uae
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(SUM(gross_revenue), SUM(orders)) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SAFE_DIVIDE(SUM(orders), SUM(session)) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'VS_UAE' and date between '2020-01-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_vs_uae_p <- bq_table_download(offence_qtr)
+
+df_vs_uae_p <- df_vs_uae_p %>%
+  filter(rank(desc(brand_ctb)) <= 60)
+
+
+#### AEO UAE
+
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(SUM(gross_revenue), SUM(orders)) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SAFE_DIVIDE(SUM(orders), SUM(session)) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'AO_UAE' and date between '2020-06-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_AEO_UAE_p <- bq_table_download(offence_qtr)
+
+df_AEO_UAE_p <- df_AEO_UAE_p %>%
+  filter(rank(desc(brand_ctb)) <= 10)
+
+
+#### AEO KSA
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SAFE_DIVIDE(SUM(gross_revenue), SUM(orders)) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.31)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(orders)) as CPO,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(new_customers)) as CPA,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), sum(gross_revenue)) as CIR,
+SAFE_DIVIDE((SUM(affiliate_cost) + SUM(cost)), SUM(session)) as CPV,
+SAFE_DIVIDE(SUM(orders), SUM(session)) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'AO_KSA' and date between '2020-06-01' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_AO_KSA_p <- bq_table_download(offence_qtr)
+
+df_AO_KSA_p <- df_AO_KSA_p %>%
+  filter(rank(desc(brand_ctb)) <= 10)
+
+
+#### AEO EGY
+
+sql_query <- sprintf("SELECT
+date,
+brand_country,
+SUM(orders) as orders,
+(SUM(affiliate_cost) + SUM(cost)) as total_cost,
+SUM(session) as sessions,
+SUM(gross_revenue)/SUM(orders) as AOV,
+SUM(gross_revenue) as gross_revenue,
+(SUM(gross_revenue)*0.33)-(SUM(affiliate_cost) + SUM(cost)) as brand_ctb,
+(SUM(affiliate_cost) + SUM(cost)) / sum(orders) as CPO,
+(SUM(affiliate_cost) + SUM(cost)) / sum(new_customers) as CPA,
+(SUM(affiliate_cost) + SUM(cost)) / sum(gross_revenue) as CIR,
+(SUM(affiliate_cost) + SUM(cost)) / SUM(session) as CPV,
+SUM(orders)/SUM(session) as CvR
+
+FROM `authentic-codex-225113.monaliza_bi.daily_cost_session_orders`
+where brand_country = 'AO_EGY' and date between '2020-06-15' and '%s'
+
+group by
+1,2
+
+order by 1 asc", start_date, end_date)
+
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+df_AO_EGY_p <- bq_table_download(offence_qtr)
+
+df_AO_EGY_p <- df_AO_EGY_p %>%
+  filter(rank(desc(brand_ctb)) <= 10)
+
+
+cir_top <- rbind(df_bbw_ksa_p, df_bbw_uae_p, df_hm_egy_p, df_hm_ksa_p, df_hm_uae_p,
+                 df_mc_ksa_p, df_bbw_ksa_p, df_vs_ksa_p, df_vs_uae_p,
+                 df_AEO_UAE_p, df_AO_KSA_p, df_AO_EGY_p)
+
+
+write.csv(cir_top, file = "cir_top.csv")
+
+
+####
+#### ----- Gtrends Sessions Transactions
+####
+
+start_date <- "2019-10-01"
+end_date <- Sys.Date() - 1
+
+hm <- gtrends(keyword = "hm",
+              geo = "SA",
+              time = "today 3-m")
+
+
+hm <- hm %>%
+  .$interest_over_time %>%
+  glimpse()
+
+
+hm$brand_country <- "hm_ksa"
+
+
+start_date <- "2019-10-01"
+end_date <- Sys.Date() - 1
+
+bbw <- gtrends(keyword = "bath and body works",
+               geo = "SA",
+               time = "today 12-m")
+
+
+bbw <- bbw %>%
+  .$interest_over_time %>%
+  glimpse()
+
+
+bbw$brand_country <- "bbw_ksa"
+
+###
+#### GA Tables
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_hm_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_hm_ksa <- bq_table_download(offence_qtr)
+
+
+###
+### BBW KSA
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_bb_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_bbw_ksa <- bq_table_download(offence_qtr)
+
+
+###
+### MC KSA
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_mc_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_mc_ksa <- bq_table_download(offence_qtr)
+
+
+###
+### mc_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_mc_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_mc_uae <- bq_table_download(offence_qtr)
+
+
+###
+### pb_ksa
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_pb_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_pb_ksa <- bq_table_download(offence_qtr)
+
+
+###
+### pb_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_pb_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_pb_uae <- bq_table_download(offence_qtr)
+
+
+###
+### we_ksa
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_we_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_we_ksa <- bq_table_download(offence_qtr)
+
+### cleaning data adding 0 to aggregate later
+
+time.points <- seq.Date(as.Date("2019-12-27"), by = 1, length.out = 79)
+date <- as.Date(time.points)
+date <- as.data.frame(date)
+
+brand_name <- "we_ksa"
+parent_grouping <- "UNPAID"
+sessions <- 0
+transaction <- 0
+
+
+data <- cbind(date, brand_name, parent_grouping, sessions, transaction)
+as.data.frame(data)
+
+time.points <- seq.Date(as.Date("2019-12-27"), by = 1, length.out = 108)
+date <- as.Date(time.points)
+date <- as.data.frame(date)
+
+brand_name <- "we_ksa"
+parent_grouping <- "PAID"
+sessions <- 0
+transaction <- 0
+
+
+data1 <- cbind(date, brand_name, parent_grouping, sessions, transaction)
+as.data.frame(data1)
+
+ga_we_ksat <- rbind(data, data1, ga_we_ksa)
+ga_we_ksat[is.na(ga_we_ksat)] <- 0
+
+
+###
+### we_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_we_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_we_uae <- bq_table_download(offence_qtr)
+
+### cleaning data adding 0 to aggregate later
+
+time.points <- seq.Date(as.Date("2019-12-27"), by = 1, length.out = 80)
+date <- as.Date(time.points)
+date <- as.data.frame(date)
+
+brand_name <- "we_uae"
+parent_grouping <- "UNPAID"
+sessions <- 0
+transaction <- 0
+
+
+data <- cbind(date, brand_name, parent_grouping, sessions, transaction)
+as.data.frame(data)
+
+time.points <- seq.Date(as.Date("2019-12-27"), by = 1, length.out = 108)
+date <- as.Date(time.points)
+date <- as.data.frame(date)
+
+brand_name <- "we_uae"
+parent_grouping <- "PAID"
+sessions <- 0
+transaction <- 0
+
+
+data1 <- cbind(date, brand_name, parent_grouping, sessions, transaction)
+as.data.frame(data1)
+
+ga_we_uaet <- rbind(data, data1, ga_we_uae)
+ga_we_uaet[is.na(ga_we_uaet)] <- 0
+
+
+###
+### bb_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_bb_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_bb_uae <- bq_table_download(offence_qtr)
+
+
+###
+### hm_kwt
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_hm_kwt` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_hm_kwt <- bq_table_download(offence_qtr)
+
+
+###
+### hm_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_hm_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_hm_uae <- bq_table_download(offence_qtr)
+
+
+###
+### mc_kwt
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_mc_kwt` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_mc_kwt <- bq_table_download(offence_qtr)
+
+
+###
+### fl_ksa
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_fl_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_fl_ksa <- bq_table_download(offence_qtr)
+
+
+###
+### fl_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_fl_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_fl_uae <- bq_table_download(offence_qtr)
+
+
+###
+### vs_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_vs_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_vs_uae <- bq_table_download(offence_qtr)
+
+
+###
+### vs_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+parent_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_vs_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ga_vs_uae <- bq_table_download(offence_qtr)
+
+
+### merge Ga data
+ga_sessions <- rbind(ga_bbw_ksa, ga_hm_ksa, ga_mc_ksa, ga_mc_uae, ga_pb_ksa,
+                     ga_we_ksat, ga_pb_uae, ga_we_uaet, ga_bb_uae, ga_hm_kwt, ga_hm_uae,
+                     ga_mc_kwt, ga_fl_ksa, ga_fl_uae, ga_vs_uae)
+
+## Paid/Unpaid Grouping
+
+df_sessions <- ga_sessions %>% filter(parent_grouping == "PAID")
+df_sessions_i <- ga_sessions %>% filter(parent_grouping == "UNPAID")
+
+## Aggregations and Sums
+
+df_sessions_i$paid_sessions <- df_sessions$sessions
+df_sessions_i$organic_sessions <- df_sessions_i$sessions
+df_sessions_i$total_transactions <- df_sessions$transaction + df_sessions_i$transaction
+df_sessions_i <- df_sessions_i %>% select(date, brand_name, paid_sessions, organic_sessions, total_transactions)
+
+write.csv(df_sessions_i, file = "df_sessions_i.csv")
+
+
+####
+### Channel Grouping
+###
+
+
+###
+### hm_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+child_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_hm_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ch_hm_uae <- bq_table_download(offence_qtr)
+ch_hm_uae[is.na(ch_hm_uae)] <- 0
+
+
+###
+### hm_ksa
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+child_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_hm_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ch_hm_ksa <- bq_table_download(offence_qtr)
+ch_hm_ksa[is.na(ch_hm_ksa)] <- 0
+
+
+###
+### bbw_ksa
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+child_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_bb_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ch_bbw_ksa <- bq_table_download(offence_qtr)
+ch_bbw_ksa[is.na(ch_bbw_ksa)] <- 0
+
+
+###
+### bbw_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+child_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_bb_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ch_bbw_uae <- bq_table_download(offence_qtr)
+ch_bbw_uae[is.na(ch_bbw_uae)] <- 0
+
+
+###
+### mc_uae
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+child_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_mc_uae` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ch_mc_uae <- bq_table_download(offence_qtr)
+ch_mc_uae[is.na(ch_mc_uae)] <- 0
+
+
+###
+### mc_ksa
+###
+
+sql_query <- sprintf("SELECT
+date,
+brand_name,
+child_grouping,
+SUM(Session) as sessions,
+SUM(Transaction) as transaction
+FROM `authentic-codex-225113.ga_channels.channels_mc_ksa` 
+group by 1,2,3
+                    
+order by 1 asc", start_date, end_date)
+offence_qtr <- bq_project_query('authentic-codex-225113', sql_query)
+ch_mc_ksa <- bq_table_download(offence_qtr)
+ch_mc_ksa[is.na(ch_mc_ksa)] <- 0
+
+
+## Channel Grouping
+
+channel <- rbind(ch_hm_uae, ch_hm_ksa, ch_bbw_ksa, ch_bbw_uae, ch_mc_uae, ch_mc_ksa)
+Organic_Social <- channel %>% filter(child_grouping == "Organic Social")
+Organic <- channel %>% filter(child_grouping == "Organic")
+Brand_Paid_Search <- channel %>% filter(child_grouping == "Brand Paid Search")
+Non_Brand_Paid_Search <- dplyr::filter(channel, grepl('^Non', child_grouping))
+Facebook <- channel %>% filter(child_grouping == "Facebook")
+Snapchat <- channel %>% filter(child_grouping == "Snapchat")
+Others <- channel %>% filter(child_grouping == "Others")
+Referral <- channel %>% filter(child_grouping == "Referral")
+Affiliate <- channel %>% filter(child_grouping == "Affiliate")
+DCM <- channel %>% filter(child_grouping == "DCM")
+SMS <- channel %>% filter(child_grouping == "SMS")
+Criteo <- channel %>% filter(child_grouping == "Criteo")
+Direct <- channel %>% filter(child_grouping == "Direct")
+GDN <- channel %>% filter(child_grouping == "GDN")
+Email <- channel %>% filter(child_grouping == "Email")
+Wpush <- channel %>% filter(child_grouping == "Wpush")
+
+### Final transformation
+
+Organic$CvR <- Direct$transaction / Direct$sessions
+Organic$Organic <- Organic$sessions
+Organic$Organic_Social <- Organic_Social$sessions
+Organic$Non_Brand_Paid_Search <- Non_Brand_Paid_Search$sessions
+Organic$Facebook <- Facebook$sessions
+Organic$Brand_Paid_Sea176054247rch <- Brand_Paid_Search$sessions
+Organic$Affiliate <- Affiliate$sessions
+
+write.csv(Organic, file = "organic.csv")
+
+
+#### Sessions and transactions comparaison
+
+start_date <- Sys.Date() - 300
+end_date <- Sys.Date() - 1
+print("GA Analytics sessions/transactions data import started..")
+
+brand_market_ga_ids <- vector(mode = "list", length = 16)
+names(brand_market_ga_ids) <- c("hm_uae", "hm_egy", "hm_ksa", "mc_uae", "mc_ksa", "bbw_uae", "bbw_ksa",
+                                "vs_uae", "vs_ksa", "wes_uae", "pb_uae", "pb_ksa", "aeo_uae", "aeo_ksa", "mc_kwt", "fl_uae")
+brand_market_ga_ids[[1]] <- "ga:164862695"
+brand_market_ga_ids[[2]] <- "ga:205050928"
+brand_market_ga_ids[[3]] <- "ga:164870155"
+brand_market_ga_ids[[4]] <- "ga:114955062"
+brand_market_ga_ids[[5]] <- "ga:114976409"
+brand_market_ga_ids[[6]] <- "ga:176054247"
+brand_market_ga_ids[[7]] <- "ga:176008893"
+brand_market_ga_ids[[8]] <- "ga:176079653"
+brand_market_ga_ids[[9]] <- "ga:176080378"
+brand_market_ga_ids[[10]] <- "ga:203456336"
+brand_market_ga_ids[[11]] <- "ga:188370045"
+brand_market_ga_ids[[12]] <- "ga:197344933"
+brand_market_ga_ids[[13]] <- "ga:214221282"
+brand_market_ga_ids[[14]] <- "ga:214218311"
+brand_market_ga_ids[[15]] <- "ga:114973213"
+brand_market_ga_ids[[16]] <- "ga:197083733"
+
+brand_market_data <- list()
+
+for (i in seq_along(brand_market_ga_ids)) {
+  brand_country <- names(brand_market_ga_ids)[[i]]
+  sprintf("Getting ga_data for brand_country: %s", brand_country)
+  ga_id <- brand_market_ga_ids[[i]]
+  brand_market_ga_data <- google_analytics(ga_id, date_range = c(start_date, end_date),
+                                           metrics = c("sessions", "transactions", "transactionsPerSession", "pageviews"),
+                                           dimensions = c("date", "dayOfWeek"))
+  
+  brand_market_ga_data$brand_country <- brand_country
+  brand_market_data[[i]] <- brand_market_ga_data
+}
+
+brand_market_ga_data_all <- do.call(rbind, brand_market_data)
+write.csv(brand_market_ga_data_all, file = "ga_st.csv")
+
+print("GA Analytics sessions/transactions data import finished..")
+
